@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import type {
   RealtimePostgresInsertPayload,
+  RealtimePostgresDeletePayload,
   RealtimeChannel,
 } from "@supabase/supabase-js";
 
@@ -41,9 +42,10 @@ export default function ChatApp() {
   const [errMsg, setErrMsg] = useState<string>("");
   const [infoMsg, setInfoMsg] = useState<string>("");
 
-  // Presence (numero persone) + canale condiviso per presence/broadcast
+  // Presence (numero persone) + canali
   const [onlineUsers, setOnlineUsers] = useState<number>(0);
   const presenceRef = useRef<RealtimeChannel | null>(null);
+  const msgChannelRef = useRef<RealtimeChannel | null>(null);
 
   // Typing indicator
   const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
@@ -53,7 +55,7 @@ export default function ChatApp() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // 🔑 Normalizza SEMPRE l’ID stanza (trim + lowercase)
+  // Normalizza stanza/nome
   const normalizedRoom = useMemo(() => room.trim().toLowerCase(), [room]);
   const normalizedName = useMemo(() => name.trim(), [name]);
 
@@ -73,7 +75,9 @@ export default function ChatApp() {
   // cleanup on unmount
   useEffect(() => {
     return () => {
+      msgChannelRef.current?.unsubscribe();
       presenceRef.current?.unsubscribe();
+      msgChannelRef.current = null;
       presenceRef.current = null;
       if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
     };
@@ -89,12 +93,21 @@ export default function ChatApp() {
       return;
     }
 
+    // chiudi eventuali canali precedenti
+    msgChannelRef.current?.unsubscribe();
+    presenceRef.current?.unsubscribe();
+    msgChannelRef.current = null;
+    presenceRef.current = null;
+
+    // 🔹 svuota subito lo stato per evitare “residui” quando rientri
+    setMessages([]);
+
     setLoading(true);
 
     const { data, error } = await supabase
       .from("messages")
       .select("id, room, author, content, created_at")
-      .eq("room", normalizedRoom) // ✅ usa la stanza normalizzata
+      .eq("room", normalizedRoom)
       .order("created_at", { ascending: true })
       .limit(200);
 
@@ -108,8 +121,8 @@ export default function ChatApp() {
     setJoined(true);
     setLoading(false);
 
-    // realtime messaggi (canale legato alla stanza normalizzata)
-    supabase
+    // --- Realtime messaggi: INSERT + DELETE ---
+    const msgCh = supabase
       .channel(`room:${normalizedRoom}`)
       .on(
         "postgres_changes",
@@ -118,20 +131,27 @@ export default function ChatApp() {
           setMessages((prev) => [...prev, payload.new]);
         }
       )
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "messages", filter: `room=eq.${normalizedRoom}` },
+        (_payload: RealtimePostgresDeletePayload<Message>) => {
+          // se qualcuno cancella, svuoto la lista (in alternativa potresti filtrare per id)
+          setMessages((prev) => prev.filter((m) => m.room !== normalizedRoom));
+        }
+      )
       .subscribe();
+    msgChannelRef.current = msgCh;
 
-    // Presence + Broadcast (typing + room_cleared)
+    // --- Presence + Broadcast (typing + room_cleared) ---
     const presenceCh = supabase.channel(`presence:${normalizedRoom}`, {
       config: { presence: { key: normalizedName } },
     });
 
     presenceCh
-      // presenza: conteggio utenti
       .on("presence", { event: "sync" }, () => {
         const state = presenceCh.presenceState();
         setOnlineUsers(Object.keys(state).length);
       })
-      // broadcast: typing degli altri
       .on("broadcast", { event: "typing" }, ({ payload }) => {
         const { name: who, typing } = payload as { name: string; typing: boolean };
         if (!who || who === normalizedName) return;
@@ -141,7 +161,6 @@ export default function ChatApp() {
           return next;
         });
       })
-      // broadcast: stanza svuotata da qualcuno
       .on("broadcast", { event: "room_cleared" }, ({ payload }) => {
         setMessages([]);
         setTypingUsers(new Set());
@@ -170,8 +189,8 @@ export default function ChatApp() {
     sendTyping(false);
 
     const { error } = await supabase.from("messages").insert({
-      room: normalizedRoom,          // ✅ salva la stanza normalizzata
-      author: normalizedName.trim(), // (nome già normalizzato)
+      room: normalizedRoom,
+      author: normalizedName,
       content: text,
     } satisfies Omit<Message, "id" | "created_at">);
 
@@ -200,26 +219,26 @@ export default function ChatApp() {
       return;
     }
 
-    // Verifica lato DB: se restano record (per vecchie maiuscole/spazi), fai una delete case-insensitive
+    // ✅ verifica lato DB che non sia rimasto nulla
     const { count, error: countErr } = await supabase
       .from("messages")
-      .select("id", { count: "exact", head: true })
+      .select("id", { head: true, count: "exact" })
       .eq("room", normalizedRoom);
 
-    if (!countErr && count && count > 0) {
-      // cleanup extra di sicurezza (case-insensitive / spazi)
-      await supabase
-        .from("messages")
-        .delete()
-        .ilike("room", normalizedRoom); // 'eq' con normalizzazione dovrebbe bastare, ma usiamo ilike come fallback
+    if (!countErr && (count ?? 0) > 0) {
+      // se rimane qualcosa, segnala (di solito per vecchi record con room non normalizzata)
+      setInfoMsg(
+        "Attenzione: alcuni messaggi storici non sono stati rimossi perché l'ID stanza non era normalizzato. Esegui l'UPDATE di normalizzazione dal pannello SQL."
+      );
+    } else {
+      setInfoMsg("Cronologia della stanza eliminata.");
     }
 
     // svuota localmente
     setMessages([]);
     setTypingUsers(new Set());
-    setInfoMsg("Cronologia della stanza eliminata.");
 
-    // 🔔 avvisa gli altri client nella stanza (realtime)
+    // 🔔 broadcast a tutti i client della stanza
     presenceRef.current?.send({
       type: "broadcast",
       event: "room_cleared",
@@ -229,7 +248,7 @@ export default function ChatApp() {
 
   function copyInviteLink() {
     const url = new URL(window.location.href);
-    url.searchParams.set("room", normalizedRoom); // ✅ link coerente
+    url.searchParams.set("room", normalizedRoom);
     url.searchParams.set("name", "");
     navigator.clipboard.writeText(url.toString());
     setLinkCopied(true);
@@ -254,7 +273,10 @@ export default function ChatApp() {
     typingTimerRef.current = setTimeout(() => sendTyping(false), 1500);
   }
 
-  const you = useMemo(() => ({ name: normalizedName, avatar: initials(normalizedName) }), [normalizedName]);
+  const you = useMemo(
+    () => ({ name: normalizedName, avatar: initials(normalizedName) }),
+    [normalizedName]
+  );
 
   const typingLabel = useMemo(() => {
     const others = Array.from(typingUsers);
@@ -322,13 +344,16 @@ export default function ChatApp() {
                 </button>
                 <button
                   onClick={() => {
+                    msgChannelRef.current?.unsubscribe();
                     presenceRef.current?.unsubscribe();
+                    msgChannelRef.current = null;
                     presenceRef.current = null;
                     setJoined(false);
                     setOnlineUsers(0);
                     setTypingUsers(new Set());
                     if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
                     selfTypingRef.current = false;
+                    setMessages([]); // pulizia extra
                   }}
                   className="h-9 px-3 rounded-lg text-sm hover:bg-slate-50"
                 >
@@ -380,12 +405,8 @@ export default function ChatApp() {
               </div>
 
               {/* Indicatore sta scrivendo */}
-              {Array.from(typingUsers).length > 0 && (
-                <div className="mt-2 text-xs text-slate-500 italic">
-                  {Array.from(typingUsers).length === 1
-                    ? `${Array.from(typingUsers)[0]} sta scrivendo…`
-                    : "Più persone stanno scrivendo…"}
-                </div>
+              {!!typingLabel && (
+                <div className="mt-2 text-xs text-slate-500 italic">{typingLabel}</div>
               )}
 
               {/* Composer */}
