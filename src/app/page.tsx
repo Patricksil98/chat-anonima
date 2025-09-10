@@ -41,7 +41,7 @@ export default function ChatApp() {
   const [errMsg, setErrMsg] = useState<string>("");
   const [infoMsg, setInfoMsg] = useState<string>("");
 
-  // Presence (numero persone)
+  // Presence (numero persone) + canale condiviso per presence/broadcast
   const [onlineUsers, setOnlineUsers] = useState<number>(0);
   const presenceRef = useRef<RealtimeChannel | null>(null);
 
@@ -116,16 +116,18 @@ export default function ChatApp() {
       )
       .subscribe();
 
-    // Presence + Typing
+    // Presence + Broadcast (typing + room_cleared)
     const presenceCh = supabase.channel(`presence:${room}`, {
       config: { presence: { key: name } },
     });
 
     presenceCh
+      // presenza: conteggio utenti
       .on("presence", { event: "sync" }, () => {
-        const state = presenceCh.presenceState();
+        const state = presenceCh.presenceState(); // { [userName]: [...] }
         setOnlineUsers(Object.keys(state).length);
       })
+      // broadcast: typing degli altri
       .on("broadcast", { event: "typing" }, ({ payload }) => {
         const { name: who, typing } = payload as { name: string; typing: boolean };
         if (!who || who === name) return;
@@ -134,6 +136,16 @@ export default function ChatApp() {
           typing ? next.add(who) : next.delete(who);
           return next;
         });
+      })
+      // ✅ broadcast: stanza svuotata da qualcuno
+      .on("broadcast", { event: "room_cleared" }, ({ payload }) => {
+        setMessages([]);
+        setTypingUsers(new Set());
+        setInfoMsg(
+          payload && (payload as any).by
+            ? `Cronologia eliminata da ${(payload as any).by}.`
+            : "Cronologia eliminata."
+        );
       })
       .subscribe((status) => {
         if (status === "SUBSCRIBED") {
@@ -166,7 +178,7 @@ export default function ChatApp() {
     }
   }
 
-  // 🚨 NUOVO: elimina cronologia stanza
+  // 🔴 Elimina cronologia stanza (per tutti)
   async function clearRoomHistory() {
     if (!room) return;
     const ok = window.confirm(
@@ -184,9 +196,17 @@ export default function ChatApp() {
       return;
     }
 
+    // svuota localmente
     setMessages([]);
     setTypingUsers(new Set());
     setInfoMsg("Cronologia della stanza eliminata.");
+
+    // 🔔 avvisa gli altri client nella stanza (realtime)
+    presenceRef.current?.send({
+      type: "broadcast",
+      event: "room_cleared",
+      payload: { by: name, at: new Date().toISOString() },
+    });
   }
 
   function copyInviteLink() {
@@ -275,7 +295,6 @@ export default function ChatApp() {
                 >
                   {linkCopied ? "Link copiato!" : "Copia invito"}
                 </button>
-                {/* 🔴 Bottone rosso: elimina cronologia */}
                 <button
                   onClick={clearRoomHistory}
                   className="h-9 px-3 rounded-lg text-sm bg-red-600 text-white hover:bg-red-700"
