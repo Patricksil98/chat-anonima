@@ -2,11 +2,22 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import type { RealtimePostgresInsertPayload } from "@supabase/supabase-js";
+
+/** Modello del messaggio in DB */
+type Message = {
+  id: string;
+  room: string;
+  author: string;
+  content: string;
+  created_at: string; // ISO
+};
 
 function initials(name: string) {
+  // tipizza esplicitamente il parametro della map per evitare "implicit any"
   return (name || "?")
     .split(/\s+/)
-    .map((s) => s[0])
+    .map((s: string) => s[0] ?? "?")
     .join("")
     .slice(0, 2)
     .toUpperCase();
@@ -16,31 +27,25 @@ function formatTime(iso: string) {
   const d = new Date(iso);
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
-type Message = {
-  id: string;
-  room: string;
-  author: string;
-  content: string;
-  created_at: string; // ISO string
-};
 
 export default function ChatApp() {
-  const [room, setRoom] = useState("");
-  const [name, setName] = useState("");
-  const [joined, setJoined] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState("");
+  const [room, setRoom] = useState<string>("");
+  const [name, setName] = useState<string>("");
+  const [joined, setJoined] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [message, setMessage] = useState<string>("");
   const [messages, setMessages] = useState<Message[]>([]);
-  const [linkCopied, setLinkCopied] = useState(false);
+  const [linkCopied, setLinkCopied] = useState<boolean>(false);
   const [errMsg, setErrMsg] = useState<string>("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // autoscroll
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // ping iniziale (facoltativo): aiuta a capire subito se URL/key o policy sono errate
+  // ping iniziale (facoltativo) per segnalare errori di config
   useEffect(() => {
     (async () => {
       const { error } = await supabase.from("messages").select("id").limit(1);
@@ -48,7 +53,7 @@ export default function ChatApp() {
     })();
   }, []);
 
-  async function joinRoom(e?: React.FormEvent) {
+  async function joinRoom(e?: React.FormEvent<HTMLFormElement>) {
     e?.preventDefault?.();
     setErrMsg("");
 
@@ -76,35 +81,40 @@ export default function ChatApp() {
       return;
     }
 
-    setMessages((data || []) as Message[]);
+    setMessages((data ?? []) as Message[]);
     setJoined(true);
     setLoading(false);
 
-    // realtime su INSERT
-    const channel = supabase
+    // realtime su INSERT (nessuna variabile inutilizzata)
+    supabase
       .channel(`room:${room}`)
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "messages", filter: `room=eq.${room}` },
-        (payload) => setMessages((prev) => [...prev, payload.new as any])
+        (payload: RealtimePostgresInsertPayload<Message>) => {
+          setMessages((prev) => [...prev, payload.new]);
+        }
       )
       .subscribe();
-
-    // opzionale: potresti tenere un riferimento per rimuoverlo onUnmount
-    // in questa semplice pagina non è strettamente necessario
   }
 
   async function sendMessage() {
     setErrMsg("");
-    if (!message.trim() || !room || !name) return;
+    const text = message.trim();
+    if (!text || !room || !name) return;
 
-    const content = message.trim();
     setMessage("");
 
-    const { error } = await supabase.from("messages").insert({ room, author: name, content });
+    const { error } = await supabase.from("messages").insert({
+      room,
+      author: name,
+      content: text,
+    } satisfies Omit<Message, "id" | "created_at">);
+
     if (error) {
       setErrMsg(`Errore Supabase INSERT: ${error.message}`);
-      setMessage(content); // ripristina testo se fallisce
+      setMessage(text); // ripristina
+      textareaRef.current?.focus();
     }
   }
 
@@ -114,7 +124,7 @@ export default function ChatApp() {
     url.searchParams.set("name", "");
     navigator.clipboard.writeText(url.toString());
     setLinkCopied(true);
-    setTimeout(() => setLinkCopied(false), 1500);
+    window.setTimeout(() => setLinkCopied(false), 1500);
   }
 
   const you = useMemo(() => ({ name, avatar: initials(name) }), [name]);
@@ -131,13 +141,13 @@ export default function ChatApp() {
                 className="h-10 rounded-lg border px-3 outline-none focus:ring-2 focus:ring-sky-400"
                 placeholder="Il tuo nome"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)}
               />
               <input
                 className="h-10 rounded-lg border px-3 outline-none focus:ring-2 focus:ring-sky-400"
-                placeholder="ID stanza (es. anonimo12)"
+                placeholder="ID stanza (es. amore12)"
                 value={room}
-                onChange={(e) => setRoom(e.target.value)}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRoom(e.target.value)}
               />
               <button
                 type="submit"
@@ -166,7 +176,7 @@ export default function ChatApp() {
             </div>
 
             <p className="mt-3 text-sm text-slate-500">
-              Suggerimento: inventa un ID stanza e condividilo con chi vuoi.
+              Suggerimento: inventa un ID stanza e condividilo con la tua ragazza.
             </p>
           </div>
         ) : (
@@ -234,10 +244,13 @@ export default function ChatApp() {
               {/* Composer */}
               <div className="mt-3 flex gap-2 items-end">
                 <textarea
+                  ref={textareaRef}
                   placeholder="Scrivi un messaggio…"
                   value={message}
-                  onChange={(e) => setMessage(e.target.value)}
-                  onKeyDown={(e) => {
+                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
+                    setMessage(e.target.value)
+                  }
+                  onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
                       sendMessage();
