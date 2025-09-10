@@ -128,7 +128,7 @@ export default function ChatApp() {
               />
               <input
                 className="h-10 rounded-lg border px-3 outline-none focus:ring-2 focus:ring-sky-400"
-                placeholder="ID stanza (es. amore12)"
+                placeholder="ID stanza (es. anonimo12)"
                 value={room}
                 onChange={(e) => setRoom(e.target.value)}
               />
@@ -159,7 +159,7 @@ export default function ChatApp() {
             </div>
 
             <p className="mt-3 text-sm text-slate-500">
-              Suggerimento: inventa un ID stanza e condividilo con la tua ragazza.
+              Suggerimento: inventa un ID stanza e condividilo con chi vuoi.
             </p>
           </div>
         ) : (
