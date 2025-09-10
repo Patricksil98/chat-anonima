@@ -16,6 +16,13 @@ function formatTime(iso: string) {
   const d = new Date(iso);
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
+type Message = {
+  id: string;
+  room: string;
+  author: string;
+  content: string;
+  created_at: string; // ISO string
+};
 
 export default function ChatApp() {
   const [room, setRoom] = useState("");
@@ -23,7 +30,7 @@ export default function ChatApp() {
   const [joined, setJoined] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
-  const [messages, setMessages] = useState<any[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [linkCopied, setLinkCopied] = useState(false);
   const [errMsg, setErrMsg] = useState<string>("");
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -69,7 +76,7 @@ export default function ChatApp() {
       return;
     }
 
-    setMessages(data || []);
+    setMessages((data || []) as Message[]);
     setJoined(true);
     setLoading(false);
 
