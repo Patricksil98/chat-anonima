@@ -3,8 +3,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import type { RealtimePostgresInsertPayload } from "@supabase/supabase-js";
-import Picker from "@emoji-mart/react";
-import data from "@emoji-mart/data";
 
 /** Modello del messaggio in DB */
 type Message = {
@@ -14,9 +12,6 @@ type Message = {
   content: string;
   created_at: string; // ISO
 };
-
-/** Tipo minimale per l'oggetto che ritorna emoji-mart */
-type PickerEmoji = { native?: string };
 
 function initials(name: string) {
   return (name || "?")
@@ -41,8 +36,6 @@ export default function ChatApp() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [linkCopied, setLinkCopied] = useState<boolean>(false);
   const [errMsg, setErrMsg] = useState<string>("");
-  const [showEmoji, setShowEmoji] = useState<boolean>(false);
-
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -74,7 +67,7 @@ export default function ChatApp() {
 
     setLoading(true);
 
-    const { data: rows, error } = await supabase
+    const { data, error } = await supabase
       .from("messages")
       .select("id, room, author, content, created_at")
       .eq("room", room)
@@ -87,11 +80,11 @@ export default function ChatApp() {
       return;
     }
 
-    setMessages((rows ?? []) as Message[]);
+    setMessages((data ?? []) as Message[]);
     setJoined(true);
     setLoading(false);
 
-    // realtime su INSERT (⚠️ nessuna variabile 'channel' inutilizzata)
+    // realtime su INSERT (no variabile inutilizzata)
     supabase
       .channel(`room:${room}`)
       .on(
@@ -131,28 +124,6 @@ export default function ChatApp() {
     navigator.clipboard.writeText(url.toString());
     setLinkCopied(true);
     window.setTimeout(() => setLinkCopied(false), 1500);
-  }
-
-  function insertAtCursor(text: string) {
-    const el = textareaRef.current;
-    if (!el) {
-      setMessage((prev) => prev + text);
-      return;
-    }
-    const start = el.selectionStart ?? message.length;
-    const end = el.selectionEnd ?? message.length;
-    const newValue = message.slice(0, start) + text + message.slice(end);
-    setMessage(newValue);
-    requestAnimationFrame(() => {
-      const pos = start + text.length;
-      el.focus();
-      el.setSelectionRange(pos, pos);
-    });
-  }
-
-  function onEmojiSelect(emoji: PickerEmoji) {
-    insertAtCursor(emoji.native ?? "");
-    setShowEmoji(false);
   }
 
   const you = useMemo(() => ({ name, avatar: initials(name) }), [name]);
@@ -269,25 +240,14 @@ export default function ChatApp() {
                 <div ref={bottomRef} />
               </div>
 
-              {/* Composer + Emoji */}
-              <div className="mt-3 flex gap-2 items-end relative">
-                <button
-                  type="button"
-                  onClick={() => setShowEmoji((v) => !v)}
-                  className="h-11 px-3 rounded-lg border text-sm hover:bg-slate-50"
-                  aria-label="Apri selettore emoji"
-                >
-                  🙂 Emoji
-                </button>
-
+              {/* Composer */}
+              <div className="mt-3 flex gap-2 items-end">
                 <textarea
                   ref={textareaRef}
                   placeholder="Scrivi un messaggio…"
                   value={message}
-                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
-                    setMessage(e.target.value)
-                  }
-                  onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+                  onChange={(e) => setMessage(e.target.value)}
+                  onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
                       sendMessage();
@@ -301,12 +261,6 @@ export default function ChatApp() {
                 >
                   Invia
                 </button>
-
-                {showEmoji && (
-                  <div className="absolute bottom-14 left-0 z-50">
-                    <Picker data={data} onEmojiSelect={onEmojiSelect} theme="light" />
-                  </div>
-                )}
               </div>
             </div>
           </div>
