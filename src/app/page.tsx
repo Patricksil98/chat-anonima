@@ -175,7 +175,9 @@ export default function ChatApp() {
             </div>
 
             <p className="mt-3 text-sm text-slate-500">
-              Suggerimento: inventa un ID stanza segreto
+              Suggerimento: inventa un ID stanza segreto (es. "amore12") e condividilo con
+              i tuoi amici. Chiunque conosca l'ID potrà entrare e leggere i messaggi, quindi
+              non usare ID troppo ovvi come "chat" o "test".
             </p>
           </div>
         ) : (
