@@ -144,7 +144,7 @@ export default function ChatApp() {
               />
               <input
                 className="h-10 rounded-lg border px-3 outline-none focus:ring-2 focus:ring-sky-400"
-                placeholder="ID stanza (es. codice segreto)"
+                placeholder="ID stanza (es. codi)"
                 value={room}
                 onChange={(e) => setRoom(e.target.value)}
               />
@@ -175,9 +175,7 @@ export default function ChatApp() {
             </div>
 
             <p className="mt-3 text-sm text-slate-500">
-              Suggerimento: inventa un ID stanza segreto (es. "amore12") e condividilo con
-              i tuoi amici. Chiunque conosca l'ID potrà entrare e leggere i messaggi, quindi
-              non usare ID troppo ovvi come "chat" o "test".
+              Suggerimento: inventa un ID stanza e condividilo
             </p>
           </div>
         ) : (
