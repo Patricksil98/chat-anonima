@@ -14,10 +14,9 @@ type Message = {
 };
 
 function initials(name: string) {
-  // tipizza esplicitamente il parametro della map per evitare "implicit any"
   return (name || "?")
     .split(/\s+/)
-    .map((s: string) => s[0] ?? "?")
+    .map((s) => s[0])
     .join("")
     .slice(0, 2)
     .toUpperCase();
@@ -45,7 +44,7 @@ export default function ChatApp() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // ping iniziale (facoltativo) per segnalare errori di config
+  // ping iniziale per evidenziare errori di config
   useEffect(() => {
     (async () => {
       const { error } = await supabase.from("messages").select("id").limit(1);
@@ -53,7 +52,7 @@ export default function ChatApp() {
     })();
   }, []);
 
-  async function joinRoom(e?: React.FormEvent<HTMLFormElement>) {
+  async function joinRoom(e?: React.FormEvent) {
     e?.preventDefault?.();
     setErrMsg("");
 
@@ -85,7 +84,7 @@ export default function ChatApp() {
     setJoined(true);
     setLoading(false);
 
-    // realtime su INSERT (nessuna variabile inutilizzata)
+    // realtime su INSERT (no variabile inutilizzata)
     supabase
       .channel(`room:${room}`)
       .on(
@@ -141,13 +140,13 @@ export default function ChatApp() {
                 className="h-10 rounded-lg border px-3 outline-none focus:ring-2 focus:ring-sky-400"
                 placeholder="Il tuo nome"
                 value={name}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)}
+                onChange={(e) => setName(e.target.value)}
               />
               <input
                 className="h-10 rounded-lg border px-3 outline-none focus:ring-2 focus:ring-sky-400"
                 placeholder="ID stanza (es. amore12)"
                 value={room}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRoom(e.target.value)}
+                onChange={(e) => setRoom(e.target.value)}
               />
               <button
                 type="submit"
@@ -247,10 +246,8 @@ export default function ChatApp() {
                   ref={textareaRef}
                   placeholder="Scrivi un messaggio…"
                   value={message}
-                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
-                    setMessage(e.target.value)
-                  }
-                  onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+                  onChange={(e) => setMessage(e.target.value)}
+                  onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
                       sendMessage();
