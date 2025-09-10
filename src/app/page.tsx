@@ -39,6 +39,7 @@ export default function ChatApp() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [linkCopied, setLinkCopied] = useState<boolean>(false);
   const [errMsg, setErrMsg] = useState<string>("");
+  const [infoMsg, setInfoMsg] = useState<string>("");
 
   // Presence (numero persone)
   const [onlineUsers, setOnlineUsers] = useState<number>(0);
@@ -77,6 +78,7 @@ export default function ChatApp() {
   async function joinRoom(e?: React.FormEvent) {
     e?.preventDefault?.();
     setErrMsg("");
+    setInfoMsg("");
 
     if (!room || !name) {
       setErrMsg("Inserisci sia il nome sia l'ID stanza.");
@@ -144,6 +146,7 @@ export default function ChatApp() {
 
   async function sendMessage() {
     setErrMsg("");
+    setInfoMsg("");
     const text = message.trim();
     if (!text || !room || !name) return;
 
@@ -161,6 +164,29 @@ export default function ChatApp() {
       setMessage(text);
       textareaRef.current?.focus();
     }
+  }
+
+  // 🚨 NUOVO: elimina cronologia stanza
+  async function clearRoomHistory() {
+    if (!room) return;
+    const ok = window.confirm(
+      `Sei sicuro di voler eliminare tutti i messaggi della stanza "${room}"?`
+    );
+    if (!ok) return;
+
+    setErrMsg("");
+    setInfoMsg("");
+
+    const { error } = await supabase.from("messages").delete().eq("room", room);
+
+    if (error) {
+      setErrMsg(`Errore DELETE: ${error.message}`);
+      return;
+    }
+
+    setMessages([]);
+    setTypingUsers(new Set());
+    setInfoMsg("Cronologia della stanza eliminata.");
   }
 
   function copyInviteLink() {
@@ -242,12 +268,20 @@ export default function ChatApp() {
                   <div className="text-xs text-slate-600 mt-1">👥 Persone nella stanza: {onlineUsers}</div>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={copyInviteLink}
                   className="h-9 px-3 rounded-lg border hover:bg-slate-50 text-sm"
                 >
                   {linkCopied ? "Link copiato!" : "Copia invito"}
+                </button>
+                {/* 🔴 Bottone rosso: elimina cronologia */}
+                <button
+                  onClick={clearRoomHistory}
+                  className="h-9 px-3 rounded-lg text-sm bg-red-600 text-white hover:bg-red-700"
+                  title="Elimina tutti i messaggi della stanza"
+                >
+                  Elimina cronologia
                 </button>
                 <button
                   onClick={() => {
@@ -265,6 +299,22 @@ export default function ChatApp() {
                 </button>
               </div>
             </div>
+
+            {/* Banner messaggi */}
+            {(errMsg || infoMsg) && (
+              <div className="mx-4 mt-3 space-y-2">
+                {errMsg && (
+                  <div className="rounded-md border border-red-300 bg-red-50 text-red-700 px-3 py-2 text-sm">
+                    {errMsg}
+                  </div>
+                )}
+                {infoMsg && (
+                  <div className="rounded-md border border-green-300 bg-green-50 text-green-700 px-3 py-2 text-sm">
+                    {infoMsg}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Messages */}
             <div className="p-4">
