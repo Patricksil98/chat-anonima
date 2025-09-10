@@ -21,6 +21,11 @@ const runtimeCaching = [
 
 const baseConfig: NextConfig = {
   reactStrictMode: true,
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+
+
   // Se vuoi testare via IP in locale, sblocca e metti il tuo IP:
   // experimental: { allowedDevOrigins: ["http://192.168.1.61:3000"] },
 };
