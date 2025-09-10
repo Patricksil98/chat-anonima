@@ -144,7 +144,7 @@ export default function ChatApp() {
               />
               <input
                 className="h-10 rounded-lg border px-3 outline-none focus:ring-2 focus:ring-sky-400"
-                placeholder="ID stanza (es. amore12)"
+                placeholder="ID stanza (es. codice segreto)"
                 value={room}
                 onChange={(e) => setRoom(e.target.value)}
               />
