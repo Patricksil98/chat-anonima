@@ -40,9 +40,14 @@ export default function ChatApp() {
   const [linkCopied, setLinkCopied] = useState<boolean>(false);
   const [errMsg, setErrMsg] = useState<string>("");
 
-  // --- NEW: presence state + ref canale
+  // Presence (numero persone)
   const [onlineUsers, setOnlineUsers] = useState<number>(0);
   const presenceRef = useRef<RealtimeChannel | null>(null);
+
+  // Typing indicator (altri stanno scrivendo)
+  const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
+  const selfTypingRef = useRef<boolean>(false);
+  const typingTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -65,6 +70,7 @@ export default function ChatApp() {
     return () => {
       presenceRef.current?.unsubscribe();
       presenceRef.current = null;
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
     };
   }, []);
 
@@ -100,7 +106,7 @@ export default function ChatApp() {
     setJoined(true);
     setLoading(false);
 
-    // realtime su INSERT (no variabile inutilizzata)
+    // realtime su INSERT
     supabase
       .channel(`room:${room}`)
       .on(
@@ -112,16 +118,27 @@ export default function ChatApp() {
       )
       .subscribe();
 
-    // --- NEW: Presence per contare gli utenti nella stanza ---
+    // Presence + Typing (stesso canale realtime, usiamo presence + broadcast)
     const presenceCh = supabase.channel(`presence:${room}`, {
-      config: { presence: { key: name } }, // identifica l'utente col suo nome
+      config: { presence: { key: name } },
     });
 
     presenceCh
+      // presenza: conteggio utenti
       .on("presence", { event: "sync" }, () => {
-        const state = presenceCh.presenceState();
-        // state: { [key: string]: Array<any> } -> ogni key è un utente
+        const state = presenceCh.presenceState(); // { [userName]: [...] }
         setOnlineUsers(Object.keys(state).length);
+      })
+      // broadcast typing degli altri
+      .on("broadcast", { event: "typing" }, ({ payload }) => {
+        const { name: who, typing } = payload as { name: string; typing: boolean };
+        if (!who || who === name) return; // ignora se sono io
+        setTypingUsers((prev) => {
+          const next = new Set(prev);
+          if (typing) next.add(who);
+          else next.delete(who);
+          return next;
+        });
       })
       .subscribe((status) => {
         if (status === "SUBSCRIBED") {
@@ -138,6 +155,9 @@ export default function ChatApp() {
     if (!text || !room || !name) return;
 
     setMessage("");
+
+    // quando invio, non sto più scrivendo
+    sendTyping(false);
 
     const { error } = await supabase.from("messages").insert({
       room,
@@ -161,7 +181,37 @@ export default function ChatApp() {
     window.setTimeout(() => setLinkCopied(false), 1500);
   }
 
+  // ---- Typing indicator helpers ----
+  function sendTyping(typing: boolean) {
+    // evita invii ripetuti identici
+    if (selfTypingRef.current === typing) return;
+    selfTypingRef.current = typing;
+
+    presenceRef.current?.send({
+      type: "broadcast",
+      event: "typing",
+      payload: { name, typing },
+    });
+  }
+
+  function handleTypingActivity() {
+    // invia "sto scrivendo"
+    sendTyping(true);
+    // programma lo stop dopo inattività
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    typingTimerRef.current = setTimeout(() => sendTyping(false), 1500);
+  }
+
   const you = useMemo(() => ({ name, avatar: initials(name) }), [name]);
+
+  // testo “sta scrivendo…”
+  const typingLabel = useMemo(() => {
+    const others = Array.from(typingUsers);
+    if (others.length === 0) return "";
+    if (others.length === 1) return `${others[0]} sta scrivendo…`;
+    if (others.length === 2) return `${others[0]} e ${others[1]} stanno scrivendo…`;
+    return "Più persone stanno scrivendo…";
+  }, [typingUsers]);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-white to-slate-50 text-slate-900 p-4">
@@ -224,10 +274,7 @@ export default function ChatApp() {
                 <div className="leading-tight">
                   <div className="font-semibold">{name}</div>
                   <div className="text-xs text-slate-500">Stanza: {room}</div>
-                  {/* NEW: contatore presenza */}
-                  <div className="text-xs text-slate-600 mt-1">
-                    👥 Persone nella stanza: {onlineUsers}
-                  </div>
+                  <div className="text-xs text-slate-600 mt-1">👥 Persone nella stanza: {onlineUsers}</div>
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -243,6 +290,9 @@ export default function ChatApp() {
                     presenceRef.current = null;
                     setJoined(false);
                     setOnlineUsers(0);
+                    setTypingUsers(new Set());
+                    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+                    selfTypingRef.current = false;
                   }}
                   className="h-9 px-3 rounded-lg text-sm hover:bg-slate-50"
                 >
@@ -251,7 +301,7 @@ export default function ChatApp() {
               </div>
             </div>
 
-            {/* Messaggio d'errore anche in chat */}
+            {/* Messaggio d'errore */}
             {errMsg && (
               <div className="mx-4 mt-3 rounded-md border border-red-300 bg-red-50 text-red-700 px-3 py-2 text-sm">
                 {errMsg}
@@ -284,17 +334,27 @@ export default function ChatApp() {
                 <div ref={bottomRef} />
               </div>
 
+              {/* “sta scrivendo…” */}
+              {!!typingLabel && (
+                <div className="mt-1 text-xs text-slate-500">{typingLabel}</div>
+              )}
+
               {/* Composer */}
-              <div className="mt-3 flex gap-2 items-end">
+              <div className="mt-2 flex gap-2 items-end">
                 <textarea
                   ref={textareaRef}
                   placeholder="Scrivi un messaggio…"
                   value={message}
-                  onChange={(e) => setMessage(e.target.value)}
+                  onChange={(e) => {
+                    setMessage(e.target.value);
+                    handleTypingActivity();
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
                       sendMessage();
+                    } else {
+                      handleTypingActivity();
                     }
                   }}
                   className="min-h-[44px] w-full rounded-lg border px-3 py-2 outline-none focus:ring-2 focus:ring-sky-400"
