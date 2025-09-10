@@ -44,7 +44,7 @@ export default function ChatApp() {
   const [onlineUsers, setOnlineUsers] = useState<number>(0);
   const presenceRef = useRef<RealtimeChannel | null>(null);
 
-  // Typing indicator (altri stanno scrivendo)
+  // Typing indicator
   const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
   const selfTypingRef = useRef<boolean>(false);
   const typingTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -57,7 +57,7 @@ export default function ChatApp() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // ping iniziale per evidenziare errori di config
+  // ping iniziale
   useEffect(() => {
     (async () => {
       const { error } = await supabase.from("messages").select("id").limit(1);
@@ -65,7 +65,7 @@ export default function ChatApp() {
     })();
   }, []);
 
-  // cleanup presence on unmount
+  // cleanup on unmount
   useEffect(() => {
     return () => {
       presenceRef.current?.unsubscribe();
@@ -80,10 +80,6 @@ export default function ChatApp() {
 
     if (!room || !name) {
       setErrMsg("Inserisci sia il nome sia l'ID stanza.");
-      return;
-    }
-    if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
-      setErrMsg("Supabase non configurato: controlla .env.local e riavvia `npm run dev`.");
       return;
     }
 
@@ -106,7 +102,7 @@ export default function ChatApp() {
     setJoined(true);
     setLoading(false);
 
-    // realtime su INSERT
+    // realtime messaggi
     supabase
       .channel(`room:${room}`)
       .on(
@@ -118,25 +114,22 @@ export default function ChatApp() {
       )
       .subscribe();
 
-    // Presence + Typing (stesso canale realtime, usiamo presence + broadcast)
+    // Presence + Typing
     const presenceCh = supabase.channel(`presence:${room}`, {
       config: { presence: { key: name } },
     });
 
     presenceCh
-      // presenza: conteggio utenti
       .on("presence", { event: "sync" }, () => {
-        const state = presenceCh.presenceState(); // { [userName]: [...] }
+        const state = presenceCh.presenceState();
         setOnlineUsers(Object.keys(state).length);
       })
-      // broadcast typing degli altri
       .on("broadcast", { event: "typing" }, ({ payload }) => {
         const { name: who, typing } = payload as { name: string; typing: boolean };
-        if (!who || who === name) return; // ignora se sono io
+        if (!who || who === name) return;
         setTypingUsers((prev) => {
           const next = new Set(prev);
-          if (typing) next.add(who);
-          else next.delete(who);
+          typing ? next.add(who) : next.delete(who);
           return next;
         });
       })
@@ -155,8 +148,6 @@ export default function ChatApp() {
     if (!text || !room || !name) return;
 
     setMessage("");
-
-    // quando invio, non sto più scrivendo
     sendTyping(false);
 
     const { error } = await supabase.from("messages").insert({
@@ -167,7 +158,7 @@ export default function ChatApp() {
 
     if (error) {
       setErrMsg(`Errore Supabase INSERT: ${error.message}`);
-      setMessage(text); // ripristina
+      setMessage(text);
       textareaRef.current?.focus();
     }
   }
@@ -183,7 +174,6 @@ export default function ChatApp() {
 
   // ---- Typing indicator helpers ----
   function sendTyping(typing: boolean) {
-    // evita invii ripetuti identici
     if (selfTypingRef.current === typing) return;
     selfTypingRef.current = typing;
 
@@ -195,16 +185,13 @@ export default function ChatApp() {
   }
 
   function handleTypingActivity() {
-    // invia "sto scrivendo"
     sendTyping(true);
-    // programma lo stop dopo inattività
     if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
     typingTimerRef.current = setTimeout(() => sendTyping(false), 1500);
   }
 
   const you = useMemo(() => ({ name, avatar: initials(name) }), [name]);
 
-  // testo “sta scrivendo…”
   const typingLabel = useMemo(() => {
     const others = Array.from(typingUsers);
     if (others.length === 0) return "";
@@ -219,7 +206,6 @@ export default function ChatApp() {
         {!joined ? (
           <div className="rounded-2xl border bg-white shadow-sm p-6">
             <h1 className="text-xl font-semibold mb-4">Crea/Entra in una stanza privata</h1>
-
             <form className="grid grid-cols-1 md:grid-cols-3 gap-3" onSubmit={joinRoom}>
               <input
                 className="h-10 rounded-lg border px-3 outline-none focus:ring-2 focus:ring-sky-400"
@@ -241,27 +227,6 @@ export default function ChatApp() {
                 {loading ? "Carico..." : "Entra"}
               </button>
             </form>
-
-            {/* Diagnostica e messaggi d'errore */}
-            <div className="mt-4 text-xs text-slate-600 space-y-1">
-              <div>
-                <b>URL Supabase:</b>{" "}
-                {process.env.NEXT_PUBLIC_SUPABASE_URL || "NON TROVATO"}
-              </div>
-              <div>
-                <b>Anon key presente:</b>{" "}
-                {process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ? "SÌ" : "NO"}
-              </div>
-              {errMsg && (
-                <div className="mt-2 rounded-md border border-red-300 bg-red-50 text-red-700 px-3 py-2">
-                  {errMsg}
-                </div>
-              )}
-            </div>
-
-            <p className="mt-3 text-sm text-slate-500">
-              Suggerimento: inventa un ID stanza e condividilo
-            </p>
           </div>
         ) : (
           <div className="rounded-2xl border bg-white shadow-sm">
@@ -301,13 +266,6 @@ export default function ChatApp() {
               </div>
             </div>
 
-            {/* Messaggio d'errore */}
-            {errMsg && (
-              <div className="mx-4 mt-3 rounded-md border border-red-300 bg-red-50 text-red-700 px-3 py-2 text-sm">
-                {errMsg}
-              </div>
-            )}
-
             {/* Messages */}
             <div className="p-4">
               <div className="h-[50vh] overflow-y-auto pr-2 space-y-3 border rounded-2xl p-3 bg-slate-50">
@@ -334,9 +292,9 @@ export default function ChatApp() {
                 <div ref={bottomRef} />
               </div>
 
-              {/* “sta scrivendo…” */}
+              {/* Indicatore sta scrivendo */}
               {!!typingLabel && (
-                <div className="mt-1 text-xs text-slate-500">{typingLabel}</div>
+                <div className="mt-2 text-xs text-slate-500 italic">{typingLabel}</div>
               )}
 
               {/* Composer */}
