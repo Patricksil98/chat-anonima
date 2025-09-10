@@ -53,6 +53,10 @@ export default function ChatApp() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // 🔑 Normalizza SEMPRE l’ID stanza (trim + lowercase)
+  const normalizedRoom = useMemo(() => room.trim().toLowerCase(), [room]);
+  const normalizedName = useMemo(() => name.trim(), [name]);
+
   // autoscroll
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -80,7 +84,7 @@ export default function ChatApp() {
     setErrMsg("");
     setInfoMsg("");
 
-    if (!room || !name) {
+    if (!normalizedRoom || !normalizedName) {
       setErrMsg("Inserisci sia il nome sia l'ID stanza.");
       return;
     }
@@ -90,7 +94,7 @@ export default function ChatApp() {
     const { data, error } = await supabase
       .from("messages")
       .select("id, room, author, content, created_at")
-      .eq("room", room)
+      .eq("room", normalizedRoom) // ✅ usa la stanza normalizzata
       .order("created_at", { ascending: true })
       .limit(200);
 
@@ -104,12 +108,12 @@ export default function ChatApp() {
     setJoined(true);
     setLoading(false);
 
-    // realtime messaggi
+    // realtime messaggi (canale legato alla stanza normalizzata)
     supabase
-      .channel(`room:${room}`)
+      .channel(`room:${normalizedRoom}`)
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "public", table: "messages", filter: `room=eq.${room}` },
+        { event: "INSERT", schema: "public", table: "messages", filter: `room=eq.${normalizedRoom}` },
         (payload: RealtimePostgresInsertPayload<Message>) => {
           setMessages((prev) => [...prev, payload.new]);
         }
@@ -117,27 +121,27 @@ export default function ChatApp() {
       .subscribe();
 
     // Presence + Broadcast (typing + room_cleared)
-    const presenceCh = supabase.channel(`presence:${room}`, {
-      config: { presence: { key: name } },
+    const presenceCh = supabase.channel(`presence:${normalizedRoom}`, {
+      config: { presence: { key: normalizedName } },
     });
 
     presenceCh
       // presenza: conteggio utenti
       .on("presence", { event: "sync" }, () => {
-        const state = presenceCh.presenceState(); // { [userName]: [...] }
+        const state = presenceCh.presenceState();
         setOnlineUsers(Object.keys(state).length);
       })
       // broadcast: typing degli altri
       .on("broadcast", { event: "typing" }, ({ payload }) => {
         const { name: who, typing } = payload as { name: string; typing: boolean };
-        if (!who || who === name) return;
+        if (!who || who === normalizedName) return;
         setTypingUsers((prev) => {
           const next = new Set(prev);
           typing ? next.add(who) : next.delete(who);
           return next;
         });
       })
-      // ✅ broadcast: stanza svuotata da qualcuno
+      // broadcast: stanza svuotata da qualcuno
       .on("broadcast", { event: "room_cleared" }, ({ payload }) => {
         setMessages([]);
         setTypingUsers(new Set());
@@ -160,14 +164,14 @@ export default function ChatApp() {
     setErrMsg("");
     setInfoMsg("");
     const text = message.trim();
-    if (!text || !room || !name) return;
+    if (!text || !normalizedRoom || !normalizedName) return;
 
     setMessage("");
     sendTyping(false);
 
     const { error } = await supabase.from("messages").insert({
-      room,
-      author: name,
+      room: normalizedRoom,          // ✅ salva la stanza normalizzata
+      author: normalizedName.trim(), // (nome già normalizzato)
       content: text,
     } satisfies Omit<Message, "id" | "created_at">);
 
@@ -180,20 +184,34 @@ export default function ChatApp() {
 
   // 🔴 Elimina cronologia stanza (per tutti)
   async function clearRoomHistory() {
-    if (!room) return;
+    if (!normalizedRoom) return;
     const ok = window.confirm(
-      `Sei sicuro di voler eliminare tutti i messaggi della stanza "${room}"?`
+      `Sei sicuro di voler eliminare tutti i messaggi della stanza "${normalizedRoom}"?`
     );
     if (!ok) return;
 
     setErrMsg("");
     setInfoMsg("");
 
-    const { error } = await supabase.from("messages").delete().eq("room", room);
+    const { error } = await supabase.from("messages").delete().eq("room", normalizedRoom);
 
     if (error) {
       setErrMsg(`Errore DELETE: ${error.message}`);
       return;
+    }
+
+    // Verifica lato DB: se restano record (per vecchie maiuscole/spazi), fai una delete case-insensitive
+    const { count, error: countErr } = await supabase
+      .from("messages")
+      .select("id", { count: "exact", head: true })
+      .eq("room", normalizedRoom);
+
+    if (!countErr && count && count > 0) {
+      // cleanup extra di sicurezza (case-insensitive / spazi)
+      await supabase
+        .from("messages")
+        .delete()
+        .ilike("room", normalizedRoom); // 'eq' con normalizzazione dovrebbe bastare, ma usiamo ilike come fallback
     }
 
     // svuota localmente
@@ -205,13 +223,13 @@ export default function ChatApp() {
     presenceRef.current?.send({
       type: "broadcast",
       event: "room_cleared",
-      payload: { by: name, at: new Date().toISOString() },
+      payload: { by: normalizedName, at: new Date().toISOString() },
     });
   }
 
   function copyInviteLink() {
     const url = new URL(window.location.href);
-    url.searchParams.set("room", room);
+    url.searchParams.set("room", normalizedRoom); // ✅ link coerente
     url.searchParams.set("name", "");
     navigator.clipboard.writeText(url.toString());
     setLinkCopied(true);
@@ -226,7 +244,7 @@ export default function ChatApp() {
     presenceRef.current?.send({
       type: "broadcast",
       event: "typing",
-      payload: { name, typing },
+      payload: { name: normalizedName, typing },
     });
   }
 
@@ -236,7 +254,7 @@ export default function ChatApp() {
     typingTimerRef.current = setTimeout(() => sendTyping(false), 1500);
   }
 
-  const you = useMemo(() => ({ name, avatar: initials(name) }), [name]);
+  const you = useMemo(() => ({ name: normalizedName, avatar: initials(normalizedName) }), [normalizedName]);
 
   const typingLabel = useMemo(() => {
     const others = Array.from(typingUsers);
@@ -283,8 +301,8 @@ export default function ChatApp() {
                   {you.avatar}
                 </div>
                 <div className="leading-tight">
-                  <div className="font-semibold">{name}</div>
-                  <div className="text-xs text-slate-500">Stanza: {room}</div>
+                  <div className="font-semibold">{you.name}</div>
+                  <div className="text-xs text-slate-500">Stanza: {normalizedRoom}</div>
                   <div className="text-xs text-slate-600 mt-1">👥 Persone nella stanza: {onlineUsers}</div>
                 </div>
               </div>
@@ -339,7 +357,7 @@ export default function ChatApp() {
             <div className="p-4">
               <div className="h-[50vh] overflow-y-auto pr-2 space-y-3 border rounded-2xl p-3 bg-slate-50">
                 {messages.map((m) => {
-                  const mine = m.author === name;
+                  const mine = m.author === you.name;
                   return (
                     <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
                       <div
@@ -362,8 +380,12 @@ export default function ChatApp() {
               </div>
 
               {/* Indicatore sta scrivendo */}
-              {!!typingLabel && (
-                <div className="mt-2 text-xs text-slate-500 italic">{typingLabel}</div>
+              {Array.from(typingUsers).length > 0 && (
+                <div className="mt-2 text-xs text-slate-500 italic">
+                  {Array.from(typingUsers).length === 1
+                    ? `${Array.from(typingUsers)[0]} sta scrivendo…`
+                    : "Più persone stanno scrivendo…"}
+                </div>
               )}
 
               {/* Composer */}
