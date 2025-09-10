@@ -2,7 +2,10 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import type { RealtimePostgresInsertPayload } from "@supabase/supabase-js";
+import type {
+  RealtimePostgresInsertPayload,
+  RealtimeChannel,
+} from "@supabase/supabase-js";
 
 /** Modello del messaggio in DB */
 type Message = {
@@ -36,6 +39,11 @@ export default function ChatApp() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [linkCopied, setLinkCopied] = useState<boolean>(false);
   const [errMsg, setErrMsg] = useState<string>("");
+
+  // --- NEW: presence state + ref canale
+  const [onlineUsers, setOnlineUsers] = useState<number>(0);
+  const presenceRef = useRef<RealtimeChannel | null>(null);
+
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -50,6 +58,14 @@ export default function ChatApp() {
       const { error } = await supabase.from("messages").select("id").limit(1);
       if (error) setErrMsg(`Ping DB fallito: ${error.message}`);
     })();
+  }, []);
+
+  // cleanup presence on unmount
+  useEffect(() => {
+    return () => {
+      presenceRef.current?.unsubscribe();
+      presenceRef.current = null;
+    };
   }, []);
 
   async function joinRoom(e?: React.FormEvent) {
@@ -95,6 +111,25 @@ export default function ChatApp() {
         }
       )
       .subscribe();
+
+    // --- NEW: Presence per contare gli utenti nella stanza ---
+    const presenceCh = supabase.channel(`presence:${room}`, {
+      config: { presence: { key: name } }, // identifica l'utente col suo nome
+    });
+
+    presenceCh
+      .on("presence", { event: "sync" }, () => {
+        const state = presenceCh.presenceState();
+        // state: { [key: string]: Array<any> } -> ogni key è un utente
+        setOnlineUsers(Object.keys(state).length);
+      })
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          presenceCh.track({ online_at: new Date().toISOString() });
+        }
+      });
+
+    presenceRef.current = presenceCh;
   }
 
   async function sendMessage() {
@@ -189,6 +224,10 @@ export default function ChatApp() {
                 <div className="leading-tight">
                   <div className="font-semibold">{name}</div>
                   <div className="text-xs text-slate-500">Stanza: {room}</div>
+                  {/* NEW: contatore presenza */}
+                  <div className="text-xs text-slate-600 mt-1">
+                    👥 Persone nella stanza: {onlineUsers}
+                  </div>
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -199,7 +238,12 @@ export default function ChatApp() {
                   {linkCopied ? "Link copiato!" : "Copia invito"}
                 </button>
                 <button
-                  onClick={() => setJoined(false)}
+                  onClick={() => {
+                    presenceRef.current?.unsubscribe();
+                    presenceRef.current = null;
+                    setJoined(false);
+                    setOnlineUsers(0);
+                  }}
                   className="h-9 px-3 rounded-lg text-sm hover:bg-slate-50"
                 >
                   Esci
