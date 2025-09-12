@@ -7,7 +7,6 @@ import type {
   RealtimeChannel,
 } from "@supabase/supabase-js";
 
-
 /** Modello del messaggio (in chiaro lato UI) */
 type Message = {
   id: string;
@@ -88,7 +87,6 @@ async function decryptTextFromEnvelope(contentField: string, password: string): 
 }
 
 /* ========== Hash password stanza per tabella `rooms` ========== */
-/** SHA-256 in esadecimale: basta per confronto client-side */
 async function hashPasswordHex(password: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(password));
   return Array.from(new Uint8Array(buf))
@@ -279,10 +277,9 @@ export default function ChatApp() {
           return next;
         });
       })
-      .on("broadcast", { event: "room_cleared" }, ({ payload }) => {
+      .on("broadcast", { event: "room_cleared" }, () => {
         setMessages([]);
         setTypingUsers(new Set());
-        // 👇 Mostra il testo richiesto quando ricevi il broadcast
         setInfoMsg("messaggi stanza cancellati");
       })
       .subscribe((status) => {
@@ -337,8 +334,6 @@ export default function ChatApp() {
 
     setMessages([]);
     setTypingUsers(new Set());
-
-    // 👇 Mostra il testo richiesto quando cancelli tu i messaggi
     setInfoMsg("messaggi stanza cancellati");
 
     presenceRef.current?.send({
@@ -465,7 +460,7 @@ export default function ChatApp() {
                   <div className="h-10 w-10 rounded-full bg-sky-600 text-white grid place-items-center font-semibold">
                     {initials(you.name)}
                   </div>
-                  <div className="leading-tight">
+                <div className="leading-tight">
                     <div className="font-semibold">{you.name}</div>
                     <div className="text-xs opacity-70 flex items_center gap-2">
                       <span className="inline-flex items-center gap-1">
@@ -510,6 +505,22 @@ export default function ChatApp() {
                   </button>
                 </div>
               </div>
+
+              {/* 🔔 Banner info/errore dentro la chat */}
+              {(errMsg || infoMsg) && (
+                <div className="px-4 sm:px-5 pt-3 space-y-2">
+                  {errMsg && (
+                    <div className="rounded-lg border border-red-400/30 bg-red-500/10 text-red-300 px-3 py-2 text-sm">
+                      {errMsg}
+                    </div>
+                  )}
+                  {infoMsg && (
+                    <div className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 text-emerald-300 px-3 py-2 text-sm">
+                      {infoMsg}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Lista messaggi */}
               <div className="p-4 sm:p-5">
