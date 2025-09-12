@@ -4,12 +4,9 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import type {
   RealtimePostgresInsertPayload,
-  RealtimePostgresDeletePayload,
   RealtimeChannel,
 } from "@supabase/supabase-js";
 
-// 👇 Se hai creato il background Matrix, sblocca l'import e il componente nel JSX
-// import MatrixBg from "@/components/MatrixBg";
 
 /** Modello del messaggio (in chiaro lato UI) */
 type Message = {
@@ -42,7 +39,7 @@ function formatTime(iso: string) {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-/* ========== Crypto utils ========== */
+/* ========== Crypto utils (E2EE) ========== */
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 function toB64(buf: ArrayBuffer): string {
@@ -90,6 +87,15 @@ async function decryptTextFromEnvelope(contentField: string, password: string): 
   }
 }
 
+/* ========== Hash password stanza per tabella `rooms` ========== */
+/** SHA-256 in esadecimale: basta per confronto client-side */
+async function hashPasswordHex(password: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(password));
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 /* ===================================================== */
 
 export default function ChatApp() {
@@ -99,7 +105,7 @@ export default function ChatApp() {
   // Join & stato app
   const [room, setRoom] = useState("");
   const [name, setName] = useState("");
-  const [pass, setPass] = useState(""); // 🔐 E2EE
+  const [pass, setPass] = useState(""); // 🔐 E2EE + password stanza
   const [joined, setJoined] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -159,6 +165,48 @@ export default function ChatApp() {
 
     setLoading(true);
 
+    /* 1) Verifica/crea stanza su tabella `rooms` con hash password */
+    try {
+      const passHash = await hashPasswordHex(pass);
+
+      const { data: existing, error: roomSelErr } = await supabase
+        .from("rooms")
+        .select("room, pass_hash")
+        .eq("room", normalizedRoom)
+        .maybeSingle();
+
+      if (roomSelErr) {
+        setErrMsg(`Errore DB (rooms): ${roomSelErr.message}`);
+        setLoading(false);
+        return;
+      }
+
+      if (!existing) {
+        // stanza non esiste: la creo con l'hash della password attuale
+        const { error: insErr } = await supabase
+          .from("rooms")
+          .insert({ room: normalizedRoom, pass_hash: passHash });
+        if (insErr) {
+          setErrMsg(`Errore creazione stanza: ${insErr.message}`);
+          setLoading(false);
+          return;
+        }
+        setInfoMsg("Stanza creata. Condividi ID stanza e password con chi vuoi.");
+      } else {
+        // stanza esiste: confronto hash
+        if (existing.pass_hash !== passHash) {
+          setErrMsg("Password stanza sbagliata");
+          setLoading(false);
+          return;
+        }
+      }
+    } catch {
+      setErrMsg("Errore durante la verifica della password stanza.");
+      setLoading(false);
+      return;
+    }
+
+    /* 2) Carico messaggi e decrifro con la password fornita */
     const { data, error } = await supabase
       .from("messages")
       .select("id, room, author, content, created_at")
@@ -172,7 +220,6 @@ export default function ChatApp() {
       return;
     }
 
-    // decrypt batch
     const dec = await Promise.all(
       (data ?? []).map(async (m) => ({
         id: m.id as string,
@@ -187,7 +234,7 @@ export default function ChatApp() {
     setJoined(true);
     setLoading(false);
 
-    // Realtime messaggi
+    /* 3) Realtime messaggi */
     const msgCh = supabase
       .channel(`room:${normalizedRoom}`)
       .on(
@@ -213,7 +260,7 @@ export default function ChatApp() {
       .subscribe();
     msgChannelRef.current = msgCh;
 
-    // Presence + broadcast
+    /* 4) Presence + typing */
     const presenceCh = supabase.channel(`presence:${normalizedRoom}`, {
       config: { presence: { key: normalizedName } },
     });
@@ -330,7 +377,6 @@ export default function ChatApp() {
   /* ========== UI ========== */
   return (
     <div className={["min-h-screen transition-colors", dark ? "bg-[#0b0f14] text-slate-100" : "bg-gradient-to-b from-white to-slate-50 text-slate-900"].join(" ")}>
-      {/* Matrix background opzionale */}
       {/* <MatrixBg opacity={dark ? 0.08 : 0.04} speed={28} fontSize={16} color="#00ff7f" /> */}
 
       {/* Topbar */}
@@ -366,7 +412,7 @@ export default function ChatApp() {
               dark ? "bg-white/5 border-white/10 backdrop-blur" : "bg-white border-slate-200"].join(" ")}>
               <h1 className="text-2xl font-semibold mb-2">Crea o entra in una stanza privata</h1>
               <p className="text-sm opacity-70 mb-6">
-                Invia messaggi cifrati end-to-end. Condividi l’ID stanza e la password con chi vuoi.
+                La stanza viene creata alla prima entrata; chi entra dopo deve usare la stessa password.
               </p>
 
               <form className="grid grid-cols-1 sm:grid-cols-4 gap-3" onSubmit={joinRoom}>
@@ -385,7 +431,7 @@ export default function ChatApp() {
                 <input
                   type="password"
                   className="h-11 rounded-xl border px-3 outline-none focus:ring-2 focus:ring-sky-400/70 bg-transparent"
-                  placeholder="Password stanza (E2EE)"
+                  placeholder="Password stanza"
                   value={pass}
                   onChange={(e) => setPass(e.target.value)}
                 />
@@ -394,7 +440,7 @@ export default function ChatApp() {
                   disabled={loading}
                   className="h-11 rounded-xl bg-gradient-to-r from-sky-600 to-cyan-500 text-white font-medium hover:opacity-95 disabled:opacity-60"
                 >
-                  {loading ? "Carico…" : "Entra"}
+                  {loading ? "Verifico…" : "Entra"}
                 </button>
               </form>
 
@@ -404,15 +450,12 @@ export default function ChatApp() {
                   {infoMsg && <div className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 text-emerald-300 px-3 py-2 text-sm">{infoMsg}</div>}
                 </div>
               )}
-
-              <div className="mt-5 text-xs opacity-60">
-                Suggerimento: il link d’invito non include la password (per sicurezza). Condividila a voce.
-              </div>
             </div>
           ) : (
             /* ===== CHAT CARD ===== */
             <div className={["rounded-3xl border shadow-sm",
               dark ? "bg-white/5 border-white/10 backdrop-blur" : "bg-white border-slate-200"].join(" ")}>
+
               {/* Header chat */}
               <div className="p-4 sm:p-5 border-b border-white/10 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
                 <div className="flex items-center gap-3">
@@ -421,7 +464,7 @@ export default function ChatApp() {
                   </div>
                   <div className="leading-tight">
                     <div className="font-semibold">{you.name}</div>
-                    <div className="text-xs opacity-70 flex items-center gap-2">
+                    <div className="text-xs opacity-70 flex items_center gap-2">
                       <span className="inline-flex items-center gap-1">
                         🗝️ <span className="tracking-tight">E2EE attiva</span>
                       </span>
@@ -465,14 +508,6 @@ export default function ChatApp() {
                 </div>
               </div>
 
-              {/* Banner info/error */}
-              {(errMsg || infoMsg) && (
-                <div className="px-4 sm:px-5 pt-3 space-y-2">
-                  {errMsg && <div className="rounded-lg border border-red-400/30 bg-red-500/10 text-red-300 px-3 py-2 text-sm">{errMsg}</div>}
-                  {infoMsg && <div className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 text-emerald-300 px-3 py-2 text-sm">{infoMsg}</div>}
-                </div>
-              )}
-
               {/* Lista messaggi */}
               <div className="p-4 sm:p-5">
                 <div className={["h-[56vh] sm:h-[60vh] overflow-y-auto pr-2 space-y-3 rounded-2xl p-3",
@@ -505,11 +540,11 @@ export default function ChatApp() {
                   <div ref={bottomRef} />
                 </div>
 
-                {/* Sta scrivendo */}
-                {!!typingLabel && (
+                {/* sta scrivendo */}
+                {!!typingUsers.size && (
                   <div className="mt-2 text-xs italic opacity-70 flex items-center gap-2">
                     <span className="inline-block h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-                    {typingLabel}
+                    {Array.from(typingUsers).join(", ")} sta/anno scrivendo…
                   </div>
                 )}
 
@@ -549,7 +584,6 @@ export default function ChatApp() {
         </div>
       </main>
 
-      {/* Footer mini */}
       <footer className="py-6 text-center text-xs opacity-60">
         {joined ? "Chat privata in tempo reale · E2EE" : "Pronta a chattare in modo sicuro · E2EE"}
       </footer>
