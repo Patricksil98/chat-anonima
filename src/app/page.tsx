@@ -8,25 +8,27 @@ import type {
   RealtimeChannel,
 } from "@supabase/supabase-js";
 
-/** Modello del messaggio in app (dopo eventuale decrittazione) */
+// 👇 Se hai creato il background Matrix, sblocca l'import e il componente nel JSX
+// import MatrixBg from "@/components/MatrixBg";
+
+/** Modello del messaggio (in chiaro lato UI) */
 type Message = {
   id: string;
   room: string;
   author: string;
-  content: string;     // SEMPRE testo in chiaro per la UI
-  created_at: string;  // ISO
+  content: string;
+  created_at: string;
 };
 
-/** Struttura del payload cifrato salvato in DB dentro 'content' */
 type CipherEnvelopeV1 = {
   v: "v1";
   alg: "AES-GCM";
   iv: string;   // base64
-  salt: string; // base64 (PBKDF2)
-  ct: string;   // base64 ciphertext
+  salt: string; // base64
+  ct: string;   // base64
 };
 
-/* -------------------- Utils UI -------------------- */
+/* ========== UI utils ========== */
 function initials(name: string) {
   return (name || "?")
     .split(/\s+/)
@@ -40,10 +42,9 @@ function formatTime(iso: string) {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-/* -------------------- Utils Crypto -------------------- */
+/* ========== Crypto utils ========== */
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
-
 function toB64(buf: ArrayBuffer): string {
   const bytes = new Uint8Array(buf);
   let binary = "";
@@ -56,92 +57,73 @@ function fromB64(b64: string): ArrayBuffer {
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes.buffer;
 }
-
 async function deriveKey(password: string, salt: ArrayBuffer): Promise<CryptoKey> {
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw",
-    textEncoder.encode(password),
-    { name: "PBKDF2" },
-    false,
-    ["deriveKey"]
-  );
+  const keyMaterial = await crypto.subtle.importKey("raw", textEncoder.encode(password), { name: "PBKDF2" }, false, ["deriveKey"]);
   return crypto.subtle.deriveKey(
-    {
-      name: "PBKDF2",
-      salt,
-      iterations: 120_000, // robusto ma ancora fluido
-      hash: "SHA-256",
-    },
+    { name: "PBKDF2", salt, iterations: 120_000, hash: "SHA-256" },
     keyMaterial,
     { name: "AES-GCM", length: 256 },
     false,
     ["encrypt", "decrypt"]
   );
 }
-
-async function encryptText(plain: string, password: string): Promise<CipherEnvelopeV1> {
+async function encryptText(plain: string, password: string) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const key = await deriveKey(password, salt.buffer);
-  const ctBuf = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv },
-    key,
-    textEncoder.encode(plain)
-  );
-  return {
-    v: "v1",
-    alg: "AES-GCM",
-    iv: toB64(iv.buffer),
-    salt: toB64(salt.buffer),
-    ct: toB64(ctBuf),
-  };
+  const ctBuf = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, textEncoder.encode(plain));
+  const env: CipherEnvelopeV1 = { v: "v1", alg: "AES-GCM", iv: toB64(iv.buffer), salt: toB64(salt.buffer), ct: toB64(ctBuf) };
+  return env;
 }
-
 async function decryptTextFromEnvelope(contentField: string, password: string): Promise<string> {
-  // Se è JSON con {v:"v1"...} prova a decifrare; altrimenti trattalo come plain text legacy
   try {
     const env = JSON.parse(contentField) as CipherEnvelopeV1;
     if (env?.v !== "v1" || env?.alg !== "AES-GCM") throw new Error("not-v1");
-    const iv = fromB64(env.iv);
+    const iv = new Uint8Array(fromB64(env.iv));
     const salt = fromB64(env.salt);
     const key = await deriveKey(password, salt);
     const ct = fromB64(env.ct);
-    const plainBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(iv) }, key, ct);
+    const plainBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
     return textDecoder.decode(plainBuf);
   } catch {
-    // Non è cifrato o password errata → ritorno testo così com’è (evita crash UI)
-    // Facoltativo: potresti mostrare "🔒 Messaggio cifrato (password errata)" se vuoi
-    return contentField;
+    return contentField; // compat messaggi legacy o password errata
   }
 }
 
-/* ==================== COMPONENTE ==================== */
-export default function ChatApp() {
-  const [room, setRoom] = useState<string>("");
-  const [name, setName] = useState<string>("");
-  const [pass, setPass] = useState<string>(""); // 🔐 Password stanza (E2EE)
-  const [joined, setJoined] = useState<boolean>(false);
-  const [loading, setLoading] = useState<boolean>(false);
-  const [message, setMessage] = useState<string>("");
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [linkCopied, setLinkCopied] = useState<boolean>(false);
-  const [errMsg, setErrMsg] = useState<string>("");
-  const [infoMsg, setInfoMsg] = useState<string>("");
+/* ===================================================== */
 
-  // Presence (numero persone) + canali
-  const [onlineUsers, setOnlineUsers] = useState<number>(0);
+export default function ChatApp() {
+  // Theme
+  const [dark, setDark] = useState(true);
+
+  // Join & stato app
+  const [room, setRoom] = useState("");
+  const [name, setName] = useState("");
+  const [pass, setPass] = useState(""); // 🔐 E2EE
+  const [joined, setJoined] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  // Chat
+  const [message, setMessage] = useState("");
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [onlineUsers, setOnlineUsers] = useState(0);
+  const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
+
+  // UI feedback
+  const [errMsg, setErrMsg] = useState("");
+  const [infoMsg, setInfoMsg] = useState("");
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  // Refs canali realtime
   const presenceRef = useRef<RealtimeChannel | null>(null);
   const msgChannelRef = useRef<RealtimeChannel | null>(null);
 
-  // Typing indicator
-  const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
-  const selfTypingRef = useRef<boolean>(false);
+  const selfTypingRef = useRef(false);
   const typingTimerRef = useRef<NodeJS.Timeout | null>(null);
-
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Normalizza stanza/nome
+  // Normalizza
   const normalizedRoom = useMemo(() => room.trim().toLowerCase(), [room]);
   const normalizedName = useMemo(() => name.trim(), [name]);
 
@@ -150,25 +132,16 @@ export default function ChatApp() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // ping iniziale
-  useEffect(() => {
-    (async () => {
-      const { error } = await supabase.from("messages").select("id").limit(1);
-      if (error) setErrMsg(`Ping DB fallito: ${error.message}`);
-    })();
-  }, []);
-
   // cleanup on unmount
   useEffect(() => {
     return () => {
       msgChannelRef.current?.unsubscribe();
       presenceRef.current?.unsubscribe();
-      msgChannelRef.current = null;
-      presenceRef.current = null;
       if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
     };
   }, []);
 
+  /* ========== JOIN ========== */
   async function joinRoom(e?: React.FormEvent) {
     e?.preventDefault?.();
     setErrMsg("");
@@ -179,13 +152,9 @@ export default function ChatApp() {
       return;
     }
 
-    // chiudi eventuali canali precedenti
+    // chiudi canali precedenti e reset
     msgChannelRef.current?.unsubscribe();
     presenceRef.current?.unsubscribe();
-    msgChannelRef.current = null;
-    presenceRef.current = null;
-
-    // svuota stato
     setMessages([]);
 
     setLoading(true);
@@ -203,7 +172,7 @@ export default function ChatApp() {
       return;
     }
 
-    // 🔐 decifra tutti (compatibile con vecchi in chiaro)
+    // decrypt batch
     const dec = await Promise.all(
       (data ?? []).map(async (m) => ({
         id: m.id as string,
@@ -225,7 +194,6 @@ export default function ChatApp() {
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "messages", filter: `room=eq.${normalizedRoom}` },
         async (payload: RealtimePostgresInsertPayload<any>) => {
-          // decifra al volo
           const plain = await decryptTextFromEnvelope(payload.new.content as string, pass);
           const newMsg: Message = {
             id: payload.new.id as string,
@@ -240,14 +208,12 @@ export default function ChatApp() {
       .on(
         "postgres_changes",
         { event: "DELETE", schema: "public", table: "messages", filter: `room=eq.${normalizedRoom}` },
-        () => {
-          setMessages((prev) => prev.filter((m) => m.room !== normalizedRoom));
-        }
+        () => setMessages([])
       )
       .subscribe();
     msgChannelRef.current = msgCh;
 
-    // Presence + Broadcast (typing + room_cleared)
+    // Presence + broadcast
     const presenceCh = supabase.channel(`presence:${normalizedRoom}`, {
       config: { presence: { key: normalizedName } },
     });
@@ -269,21 +235,16 @@ export default function ChatApp() {
       .on("broadcast", { event: "room_cleared" }, ({ payload }) => {
         setMessages([]);
         setTypingUsers(new Set());
-        setInfoMsg(
-          payload && (payload as any).by
-            ? `Cronologia eliminata da ${(payload as any).by}.`
-            : "Cronologia eliminata."
-        );
+        setInfoMsg(payload && (payload as any).by ? `Cronologia eliminata da ${(payload as any).by}.` : "Cronologia eliminata.");
       })
       .subscribe((status) => {
-        if (status === "SUBSCRIBED") {
-          presenceCh.track({ online_at: new Date().toISOString() });
-        }
+        if (status === "SUBSCRIBED") presenceCh.track({ online_at: new Date().toISOString() });
       });
 
     presenceRef.current = presenceCh;
   }
 
+  /* ========== SEND ========== */
   async function sendMessage() {
     setErrMsg("");
     setInfoMsg("");
@@ -294,32 +255,28 @@ export default function ChatApp() {
     sendTyping(false);
 
     try {
-      // 🔐 cifra il testo PRIMA di salvare
-      const envelope = await encryptText(text, pass);
+      const env = await encryptText(text, pass);
       const { error } = await supabase.from("messages").insert({
         room: normalizedRoom,
         author: normalizedName,
-        content: JSON.stringify(envelope), // salviamo il JSON cifrato
+        content: JSON.stringify(env),
       });
       if (error) {
         setErrMsg(`Errore Supabase INSERT: ${error.message}`);
         setMessage(text);
         textareaRef.current?.focus();
       }
-    } catch (err: any) {
+    } catch {
       setErrMsg("Errore durante la cifratura del messaggio.");
       setMessage(text);
       textareaRef.current?.focus();
     }
   }
 
-  // Elimina cronologia stanza (per tutti)
+  /* ========== CLEAR ========== */
   async function clearRoomHistory() {
     if (!normalizedRoom) return;
-    const ok = window.confirm(
-      `Sei sicuro di voler eliminare tutti i messaggi della stanza "${normalizedRoom}"?`
-    );
-    if (!ok) return;
+    if (!window.confirm(`Eliminare tutti i messaggi della stanza "${normalizedRoom}"?`)) return;
 
     setErrMsg("");
     setInfoMsg("");
@@ -330,22 +287,9 @@ export default function ChatApp() {
       return;
     }
 
-    // verifica lato DB
-    const { count } = await supabase
-      .from("messages")
-      .select("id", { head: true, count: "exact" })
-      .eq("room", normalizedRoom);
-
-    if ((count ?? 0) > 0) {
-      setInfoMsg(
-        "Attenzione: alcuni messaggi storici non sono stati rimossi (ID stanza non normalizzato)."
-      );
-    } else {
-      setInfoMsg("Cronologia della stanza eliminata.");
-    }
-
     setMessages([]);
     setTypingUsers(new Set());
+    setInfoMsg("Cronologia della stanza eliminata.");
 
     presenceRef.current?.send({
       type: "broadcast",
@@ -354,26 +298,19 @@ export default function ChatApp() {
     });
   }
 
+  /* ========== UX helpers ========== */
   function copyInviteLink() {
     const url = new URL(window.location.href);
     url.searchParams.set("room", normalizedRoom);
     url.searchParams.set("name", "");
-    // per sicurezza NON mettiamo la password nel link
     navigator.clipboard.writeText(url.toString());
     setLinkCopied(true);
     window.setTimeout(() => setLinkCopied(false), 1500);
   }
-
-  // ---- Typing indicator helpers ----
   function sendTyping(typing: boolean) {
     if (selfTypingRef.current === typing) return;
     selfTypingRef.current = typing;
-
-    presenceRef.current?.send({
-      type: "broadcast",
-      event: "typing",
-      payload: { name: normalizedName, typing },
-    });
+    presenceRef.current?.send({ type: "broadcast", event: "typing", payload: { name: normalizedName, typing } });
   }
   function handleTypingActivity() {
     sendTyping(true);
@@ -381,11 +318,7 @@ export default function ChatApp() {
     typingTimerRef.current = setTimeout(() => sendTyping(false), 1500);
   }
 
-  const you = useMemo(
-    () => ({ name: normalizedName, avatar: initials(normalizedName) }),
-    [normalizedName]
-  );
-
+  const you = useMemo(() => ({ name: normalizedName, avatar: initials(normalizedName) }), [normalizedName]);
   const typingLabel = useMemo(() => {
     const others = Array.from(typingUsers);
     if (others.length === 0) return "";
@@ -394,168 +327,232 @@ export default function ChatApp() {
     return "Più persone stanno scrivendo…";
   }, [typingUsers]);
 
+  /* ========== UI ========== */
   return (
-    <div className="min-h-screen bg-gradient-to-b from-white to-slate-50 text-slate-900 p-4">
-      <div className="max-w-3xl mx-auto">
-        {!joined ? (
-          <div className="rounded-2xl border bg-white shadow-sm p-6">
-            <h1 className="text-xl font-semibold mb-4">Crea/Entra in una stanza privata</h1>
-            <form className="grid grid-cols-1 md:grid-cols-4 gap-3" onSubmit={joinRoom}>
-              <input
-                className="h-10 rounded-lg border px-3 outline-none focus:ring-2 focus:ring-sky-400"
-                placeholder="Il tuo nome"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-              />
-              <input
-                className="h-10 rounded-lg border px-3 outline-none focus:ring-2 focus:ring-sky-400"
-                placeholder="ID stanza (es. codi)"
-                value={room}
-                onChange={(e) => setRoom(e.target.value)}
-              />
-              {/* 🔐 Password stanza per E2EE */}
-              <input
-                type="password"
-                className="h-10 rounded-lg border px-3 outline-none focus:ring-2 focus:ring-sky-400"
-                placeholder="Password stanza (E2EE)"
-                value={pass}
-                onChange={(e) => setPass(e.target.value)}
-              />
-              <button
-                type="submit"
-                disabled={loading}
-                className="h-10 rounded-lg bg-sky-600 text-white font-medium hover:bg-sky-700 disabled:opacity-60"
-              >
-                {loading ? "Carico..." : "Entra"}
-              </button>
-            </form>
+    <div className={["min-h-screen transition-colors", dark ? "bg-[#0b0f14] text-slate-100" : "bg-gradient-to-b from-white to-slate-50 text-slate-900"].join(" ")}>
+      {/* Matrix background opzionale */}
+      {/* <MatrixBg opacity={dark ? 0.08 : 0.04} speed={28} fontSize={16} color="#00ff7f" /> */}
+
+      {/* Topbar */}
+      <header className="sticky top-0 z-20 backdrop-blur supports-[backdrop-filter]:bg-white/5">
+        <div className="max-w-3xl mx-auto flex items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-2">
+            <span className="text-xl font-semibold">Chat Anonima</span>
+            <span className="text-xs px-2 py-0.5 rounded-full bg-sky-500/15 text-sky-400 border border-sky-500/30">
+              Realtime · E2EE
+            </span>
           </div>
-        ) : (
-          <div className="rounded-2xl border bg-white shadow-sm">
-            {/* Header */}
-            <div className="p-4 border-b flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="h-9 w-9 rounded-full bg-sky-600 text-white grid place-items-center font-semibold">
-                  {you.avatar}
-                </div>
-                <div className="leading-tight">
-                  <div className="font-semibold">{you.name}</div>
-                  <div className="text-xs text-slate-500">Stanza: {normalizedRoom}</div>
-                  <div className="text-xs text-slate-600 mt-1">👥 Persone nella stanza: {onlineUsers}</div>
-                </div>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  onClick={copyInviteLink}
-                  className="h-9 px-3 rounded-lg border hover:bg-slate-50 text-sm"
-                >
-                  {linkCopied ? "Link copiato!" : "Copia invito"}
-                </button>
-                <button
-                  onClick={clearRoomHistory}
-                  className="h-9 px-3 rounded-lg text-sm bg-red-600 text-white hover:bg-red-700"
-                  title="Elimina tutti i messaggi della stanza"
-                >
-                  Elimina cronologia
-                </button>
-                <button
-                  onClick={() => {
-                    msgChannelRef.current?.unsubscribe();
-                    presenceRef.current?.unsubscribe();
-                    msgChannelRef.current = null;
-                    presenceRef.current = null;
-                    setJoined(false);
-                    setOnlineUsers(0);
-                    setTypingUsers(new Set());
-                    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
-                    selfTypingRef.current = false;
-                    setMessages([]);
-                  }}
-                  className="h-9 px-3 rounded-lg text-sm hover:bg-slate-50"
-                >
-                  Esci
-                </button>
-              </div>
-            </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs opacity-70 hidden sm:inline">Stanza</span>
+            <span className="text-xs font-medium px-2 py-1 rounded bg-slate-800/50 border border-slate-700/50">
+              {normalizedRoom || "—"}
+            </span>
+            <button
+              onClick={() => setDark((v) => !v)}
+              className="ml-2 h-8 px-3 rounded-lg border border-slate-600/50 hover:bg-white/5 text-xs"
+              title="Toggle tema"
+            >
+              {dark ? "☀️ Light" : "🌙 Dark"}
+            </button>
+          </div>
+        </div>
+      </header>
 
-            {/* Banner messaggi */}
-            {(errMsg || infoMsg) && (
-              <div className="mx-4 mt-3 space-y-2">
-                {errMsg && (
-                  <div className="rounded-md border border-red-300 bg-red-50 text-red-700 px-3 py-2 text-sm">
-                    {errMsg}
-                  </div>
-                )}
-                {infoMsg && (
-                  <div className="rounded-md border border-green-300 bg-green-50 text-green-700 px-3 py-2 text-sm">
-                    {infoMsg}
-                  </div>
-                )}
-              </div>
-            )}
+      <main className="px-4 py-6">
+        <div className="max-w-3xl mx-auto">
+          {!joined ? (
+            /* ===== HERO / JOIN CARD ===== */
+            <div className={["rounded-3xl border shadow-sm p-6 sm:p-8",
+              dark ? "bg-white/5 border-white/10 backdrop-blur" : "bg-white border-slate-200"].join(" ")}>
+              <h1 className="text-2xl font-semibold mb-2">Crea o entra in una stanza privata</h1>
+              <p className="text-sm opacity-70 mb-6">
+                Invia messaggi cifrati end-to-end. Condividi l’ID stanza e la password con chi vuoi.
+              </p>
 
-            {/* Messages */}
-            <div className="p-4">
-              <div className="h-[50vh] overflow-y-auto pr-2 space-y-3 border rounded-2xl p-3 bg-slate-50">
-                {messages.map((m) => {
-                  const mine = m.author === you.name;
-                  return (
-                    <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-                      <div
-                        className={`max-w-[85%] rounded-2xl px-3 py-2 shadow-sm ${
-                          mine
-                            ? "bg-sky-600 text-white rounded-br-sm"
-                            : "bg-white rounded-bl-sm border"
-                        }`}
-                      >
-                        <div className="text-xs mb-1 opacity-80">{mine ? "Tu" : m.author}</div>
-                        <div className="whitespace-pre-wrap break-words">{m.content}</div>
-                        <div className="text-[10px] opacity-60 mt-1 text-right">
-                          {formatTime(m.created_at)}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-                <div ref={bottomRef} />
-              </div>
-
-              {/* Indicatore sta scrivendo */}
-              {!!typingLabel && (
-                <div className="mt-2 text-xs text-slate-500 italic">{typingLabel}</div>
-              )}
-
-              {/* Composer */}
-              <div className="mt-2 flex gap-2 items-end">
-                <textarea
-                  ref={textareaRef}
-                  placeholder="Scrivi un messaggio…"
-                  value={message}
-                  onChange={(e) => {
-                    setMessage(e.target.value);
-                    handleTypingActivity();
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      sendMessage();
-                    } else {
-                      handleTypingActivity();
-                    }
-                  }}
-                  className="min-h-[44px] w-full rounded-lg border px-3 py-2 outline-none focus:ring-2 focus:ring-sky-400"
+              <form className="grid grid-cols-1 sm:grid-cols-4 gap-3" onSubmit={joinRoom}>
+                <input
+                  className="h-11 rounded-xl border px-3 outline-none focus:ring-2 focus:ring-sky-400/70 bg-transparent"
+                  placeholder="Il tuo nome"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
+                <input
+                  className="h-11 rounded-xl border px-3 outline-none focus:ring-2 focus:ring-sky-400/70 bg-transparent"
+                  placeholder="ID stanza (es. amore12)"
+                  value={room}
+                  onChange={(e) => setRoom(e.target.value)}
+                />
+                <input
+                  type="password"
+                  className="h-11 rounded-xl border px-3 outline-none focus:ring-2 focus:ring-sky-400/70 bg-transparent"
+                  placeholder="Password stanza (E2EE)"
+                  value={pass}
+                  onChange={(e) => setPass(e.target.value)}
                 />
                 <button
-                  onClick={sendMessage}
-                  className="h-11 px-4 rounded-lg bg-sky-600 text-white font-medium hover:bg-sky-700"
+                  type="submit"
+                  disabled={loading}
+                  className="h-11 rounded-xl bg-gradient-to-r from-sky-600 to-cyan-500 text-white font-medium hover:opacity-95 disabled:opacity-60"
                 >
-                  Invia
+                  {loading ? "Carico…" : "Entra"}
                 </button>
+              </form>
+
+              {(errMsg || infoMsg) && (
+                <div className="mt-4 space-y-2">
+                  {errMsg && <div className="rounded-lg border border-red-400/30 bg-red-500/10 text-red-300 px-3 py-2 text-sm">{errMsg}</div>}
+                  {infoMsg && <div className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 text-emerald-300 px-3 py-2 text-sm">{infoMsg}</div>}
+                </div>
+              )}
+
+              <div className="mt-5 text-xs opacity-60">
+                Suggerimento: il link d’invito non include la password (per sicurezza). Condividila a voce.
               </div>
             </div>
-          </div>
-        )}
-      </div>
+          ) : (
+            /* ===== CHAT CARD ===== */
+            <div className={["rounded-3xl border shadow-sm",
+              dark ? "bg-white/5 border-white/10 backdrop-blur" : "bg-white border-slate-200"].join(" ")}>
+              {/* Header chat */}
+              <div className="p-4 sm:p-5 border-b border-white/10 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="h-10 w-10 rounded-full bg-sky-600 text-white grid place-items-center font-semibold">
+                    {initials(you.name)}
+                  </div>
+                  <div className="leading-tight">
+                    <div className="font-semibold">{you.name}</div>
+                    <div className="text-xs opacity-70 flex items-center gap-2">
+                      <span className="inline-flex items-center gap-1">
+                        🗝️ <span className="tracking-tight">E2EE attiva</span>
+                      </span>
+                      <span>•</span>
+                      <span>Stanza: <b>{normalizedRoom}</b></span>
+                      <span>•</span>
+                      <span>👥 {onlineUsers}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={copyInviteLink}
+                    className="h-9 px-3 rounded-lg border border-slate-600/40 hover:bg-white/5 text-sm"
+                  >
+                    {linkCopied ? "Link copiato!" : "Copia invito"}
+                  </button>
+                  <button
+                    onClick={clearRoomHistory}
+                    className="h-9 px-3 rounded-lg text-sm bg-red-600 text-white hover:bg-red-700"
+                    title="Elimina tutti i messaggi della stanza"
+                  >
+                    Elimina cronologia
+                  </button>
+                  <button
+                    onClick={() => {
+                      msgChannelRef.current?.unsubscribe();
+                      presenceRef.current?.unsubscribe();
+                      setJoined(false);
+                      setOnlineUsers(0);
+                      setTypingUsers(new Set());
+                      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+                      selfTypingRef.current = false;
+                      setMessages([]);
+                    }}
+                    className="h-9 px-3 rounded-lg text-sm border border-slate-600/40 hover:bg-white/5"
+                  >
+                    Esci
+                  </button>
+                </div>
+              </div>
+
+              {/* Banner info/error */}
+              {(errMsg || infoMsg) && (
+                <div className="px-4 sm:px-5 pt-3 space-y-2">
+                  {errMsg && <div className="rounded-lg border border-red-400/30 bg-red-500/10 text-red-300 px-3 py-2 text-sm">{errMsg}</div>}
+                  {infoMsg && <div className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 text-emerald-300 px-3 py-2 text-sm">{infoMsg}</div>}
+                </div>
+              )}
+
+              {/* Lista messaggi */}
+              <div className="p-4 sm:p-5">
+                <div className={["h-[56vh] sm:h-[60vh] overflow-y-auto pr-2 space-y-3 rounded-2xl p-3",
+                  dark ? "bg-black/20 border border-white/10" : "bg-slate-50 border"].join(" ")}>
+                  {messages.map((m) => {
+                    const mine = m.author === you.name;
+                    return (
+                      <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
+                        <div
+                          className={[
+                            "max-w-[85%] sm:max-w-[75%] rounded-2xl px-3 py-2 shadow-sm",
+                            mine
+                              ? "bg-gradient-to-br from-sky-600 to-cyan-600 text-white rounded-br-sm"
+                              : dark
+                              ? "bg-white/5 border border-white/10 rounded-bl-sm"
+                              : "bg-white border rounded-bl-sm",
+                          ].join(" ")}
+                        >
+                          <div className={`text-[11px] mb-1 ${mine ? "opacity-90" : "opacity-80"}`}>
+                            {mine ? "Tu" : m.author}
+                          </div>
+                          <div className="whitespace-pre-wrap break-words">{m.content}</div>
+                          <div className={`text-[10px] mt-1 text-right ${mine ? "opacity-90" : "opacity-70"}`}>
+                            {formatTime(m.created_at)}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div ref={bottomRef} />
+                </div>
+
+                {/* Sta scrivendo */}
+                {!!typingLabel && (
+                  <div className="mt-2 text-xs italic opacity-70 flex items-center gap-2">
+                    <span className="inline-block h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                    {typingLabel}
+                  </div>
+                )}
+
+                {/* Composer */}
+                <div className="mt-3 flex gap-2 items-end">
+                  <textarea
+                    ref={textareaRef}
+                    placeholder="Scrivi un messaggio…"
+                    value={message}
+                    onChange={(e) => {
+                      setMessage(e.target.value);
+                      handleTypingActivity();
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        sendMessage();
+                      } else {
+                        handleTypingActivity();
+                      }
+                    }}
+                    className={[
+                      "min-h-[48px] w-full rounded-xl border px-3 py-3 outline-none focus:ring-2",
+                      dark ? "bg-white/5 border-white/10 focus:ring-sky-400/60" : "bg-white border-slate-300 focus:ring-sky-400",
+                    ].join(" ")}
+                  />
+                  <button
+                    onClick={sendMessage}
+                    className="h-12 px-5 rounded-xl bg-gradient-to-r from-sky-600 to-cyan-500 text-white font-medium hover:opacity-95"
+                  >
+                    Invia ➤
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </main>
+
+      {/* Footer mini */}
+      <footer className="py-6 text-center text-xs opacity-60">
+        {joined ? "Chat privata in tempo reale · E2EE" : "Pronta a chattare in modo sicuro · E2EE"}
+      </footer>
     </div>
   );
 }
