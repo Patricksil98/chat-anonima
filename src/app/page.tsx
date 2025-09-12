@@ -8,9 +8,6 @@ import type {
   RealtimeChannel,
 } from "@supabase/supabase-js";
 
-// 👇 Se hai creato il background Matrix, sblocca l'import e il componente nel JSX
-// import MatrixBg from "@/components/MatrixBg";
-
 /** Modello del messaggio (in chiaro lato UI) */
 type Message = {
   id: string;
@@ -87,6 +84,16 @@ async function decryptTextFromEnvelope(contentField: string, password: string): 
     return textDecoder.decode(plainBuf);
   } catch {
     return contentField; // compat messaggi legacy o password errata
+  }
+}
+
+/** Rileva se una stringa "sembra" un envelope v1 */
+function looksEncryptedV1(s: string): boolean {
+  try {
+    const o = JSON.parse(s);
+    return o && o.v === "v1" && o.alg === "AES-GCM" && typeof o.ct === "string";
+  } catch {
+    return false;
   }
 }
 
@@ -170,6 +177,20 @@ export default function ChatApp() {
       setErrMsg(`Errore Supabase SELECT: ${error.message}`);
       setLoading(false);
       return;
+    }
+
+    // 🔴 check password (se esistono messaggi cifrati)
+    const firstEncrypted = (data ?? []).find(
+      (m: any) => typeof m.content === "string" && looksEncryptedV1(m.content)
+    );
+    if (firstEncrypted) {
+      const test = await decryptTextFromEnvelope(firstEncrypted.content as string, pass);
+      // se la decrittazione ha "fallito", la funzione restituisce l'originale (JSON) → password errata
+      if (test === firstEncrypted.content) {
+        setLoading(false);
+        setErrMsg("Password stanza sbagliata");
+        return;
+      }
     }
 
     // decrypt batch
@@ -330,7 +351,6 @@ export default function ChatApp() {
   /* ========== UI ========== */
   return (
     <div className={["min-h-screen transition-colors", dark ? "bg-[#0b0f14] text-slate-100" : "bg-gradient-to-b from-white to-slate-50 text-slate-900"].join(" ")}>
-      {/* Matrix background opzionale */}
       {/* <MatrixBg opacity={dark ? 0.08 : 0.04} speed={28} fontSize={16} color="#00ff7f" /> */}
 
       {/* Topbar */}
