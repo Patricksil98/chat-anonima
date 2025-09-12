@@ -7,9 +7,7 @@ import type {
   RealtimePostgresDeletePayload,
   RealtimeChannel,
 } from "@supabase/supabase-js";
-
-// 👇 Se hai creato il background Matrix, sblocca l'import e il componente nel JSX
-// import MatrixBg from "@/components/MatrixBg";
+import MatrixBg from "@/components/MatrixBg";
 
 /** Modello del messaggio (in chiaro lato UI) */
 type Message = {
@@ -329,9 +327,14 @@ export default function ChatApp() {
 
   /* ========== UI ========== */
   return (
-    <div className={["min-h-screen transition-colors", dark ? "bg-[#0b0f14] text-slate-100" : "bg-gradient-to-b from-white to-slate-50 text-slate-900"].join(" ")}>
-      {/* Matrix background opzionale */}
-      {/* <MatrixBg opacity={dark ? 0.08 : 0.04} speed={28} fontSize={16} color="#00ff7f" /> */}
+    <div
+      className={[
+        "min-h-screen transition-colors relative",
+        dark ? "bg-[#0b0f14] text-slate-100" : "bg-gradient-to-b from-white to-slate-50 text-slate-900",
+      ].join(" ")}
+    >
+      {/* ✨ Matrix background dietro a tutto */}
+      <MatrixBg opacity={dark ? 0.08 : 0.04} speed={28} fontSize={16} color="#00ff7f" />
 
       {/* Topbar */}
       <header className="sticky top-0 z-20 backdrop-blur supports-[backdrop-filter]:bg-white/5">
@@ -362,8 +365,12 @@ export default function ChatApp() {
         <div className="max-w-3xl mx-auto">
           {!joined ? (
             /* ===== HERO / JOIN CARD ===== */
-            <div className={["rounded-3xl border shadow-sm p-6 sm:p-8",
-              dark ? "bg-white/5 border-white/10 backdrop-blur" : "bg-white border-slate-200"].join(" ")}>
+            <div
+              className={[
+                "rounded-3xl border shadow-sm p-6 sm:p-8",
+                dark ? "bg-white/5 border-white/10 backdrop-blur" : "bg-white border-slate-200",
+              ].join(" ")}
+            >
               <h1 className="text-2xl font-semibold mb-2">Crea o entra in una stanza privata</h1>
               <p className="text-sm opacity-70 mb-6">
                 Invia messaggi cifrati end-to-end. Condividi l’ID stanza e la password con chi vuoi.
@@ -400,8 +407,16 @@ export default function ChatApp() {
 
               {(errMsg || infoMsg) && (
                 <div className="mt-4 space-y-2">
-                  {errMsg && <div className="rounded-lg border border-red-400/30 bg-red-500/10 text-red-300 px-3 py-2 text-sm">{errMsg}</div>}
-                  {infoMsg && <div className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 text-emerald-300 px-3 py-2 text-sm">{infoMsg}</div>}
+                  {errMsg && (
+                    <div className="rounded-lg border border-red-400/30 bg-red-500/10 text-red-300 px-3 py-2 text-sm">
+                      {errMsg}
+                    </div>
+                  )}
+                  {infoMsg && (
+                    <div className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 text-emerald-300 px-3 py-2 text-sm">
+                      {infoMsg}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -411,8 +426,12 @@ export default function ChatApp() {
             </div>
           ) : (
             /* ===== CHAT CARD ===== */
-            <div className={["rounded-3xl border shadow-sm",
-              dark ? "bg-white/5 border-white/10 backdrop-blur" : "bg-white border-slate-200"].join(" ")}>
+            <div
+              className={[
+                "rounded-3xl border shadow-sm",
+                dark ? "bg-white/5 border-white/10 backdrop-blur" : "bg-white border-slate-200",
+              ].join(" ")}
+            >
               {/* Header chat */}
               <div className="p-4 sm:p-5 border-b border-white/10 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
                 <div className="flex items-center gap-3">
@@ -426,7 +445,9 @@ export default function ChatApp() {
                         🗝️ <span className="tracking-tight">E2EE attiva</span>
                       </span>
                       <span>•</span>
-                      <span>Stanza: <b>{normalizedRoom}</b></span>
+                      <span>
+                        Stanza: <b>{normalizedRoom}</b>
+                      </span>
                       <span>•</span>
                       <span>👥 {onlineUsers}</span>
                     </div>
@@ -468,15 +489,27 @@ export default function ChatApp() {
               {/* Banner info/error */}
               {(errMsg || infoMsg) && (
                 <div className="px-4 sm:px-5 pt-3 space-y-2">
-                  {errMsg && <div className="rounded-lg border border-red-400/30 bg-red-500/10 text-red-300 px-3 py-2 text-sm">{errMsg}</div>}
-                  {infoMsg && <div className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 text-emerald-300 px-3 py-2 text-sm">{infoMsg}</div>}
+                  {errMsg && (
+                    <div className="rounded-lg border border-red-400/30 bg-red-500/10 text-red-300 px-3 py-2 text-sm">
+                      {errMsg}
+                    </div>
+                  )}
+                  {infoMsg && (
+                    <div className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 text-emerald-300 px-3 py-2 text-sm">
+                      {infoMsg}
+                    </div>
+                  )}
                 </div>
               )}
 
               {/* Lista messaggi */}
               <div className="p-4 sm:p-5">
-                <div className={["h-[56vh] sm:h-[60vh] overflow-y-auto pr-2 space-y-3 rounded-2xl p-3",
-                  dark ? "bg-black/20 border border-white/10" : "bg-slate-50 border"].join(" ")}>
+                <div
+                  className={[
+                    "h-[56vh] sm:h-[60vh] overflow-y-auto pr-2 space-y-3 rounded-2xl p-3",
+                    dark ? "bg-black/20 border border-white/10" : "bg-slate-50 border",
+                  ].join(" ")}
+                >
                   {messages.map((m) => {
                     const mine = m.author === you.name;
                     return (
