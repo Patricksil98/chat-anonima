@@ -282,7 +282,8 @@ export default function ChatApp() {
       .on("broadcast", { event: "room_cleared" }, ({ payload }) => {
         setMessages([]);
         setTypingUsers(new Set());
-        setInfoMsg(payload && (payload as any).by ? `Cronologia eliminata da ${(payload as any).by}.` : "Cronologia eliminata.");
+        // 👇 Mostra il testo richiesto quando ricevi il broadcast
+        setInfoMsg("messaggi stanza cancellati");
       })
       .subscribe((status) => {
         if (status === "SUBSCRIBED") presenceCh.track({ online_at: new Date().toISOString() });
@@ -336,7 +337,9 @@ export default function ChatApp() {
 
     setMessages([]);
     setTypingUsers(new Set());
-    setInfoMsg("Cronologia della stanza eliminata.");
+
+    // 👇 Mostra il testo richiesto quando cancelli tu i messaggi
+    setInfoMsg("messaggi stanza cancellati");
 
     presenceRef.current?.send({
       type: "broadcast",
